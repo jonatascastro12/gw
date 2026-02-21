@@ -1,0 +1,86 @@
+# AGENTS.md
+
+This file documents architectural decisions and operating rules for contributors working on `spr`.
+
+## Purpose
+`spr` manages stacked branches/PRs across Git worktrees with deterministic, low-surprise behavior.
+
+## Hard Decisions (Do Not Revert Without Discussion)
+1. Stack discovery is metadata-first, not PR-first.
+- Source of truth for parent linkage is `spr-meta.json` in git common dir.
+- `spr branch` must persist `child -> parent` linkage.
+- Open PRs are optional for planning; required only for PR-specific operations.
+
+2. Worktree scope is auto-detected.
+- No `--all-worktrees` flag.
+- Commands discover all local worktrees, then operate only on the connected component from current branch (or `--from`).
+
+3. Sync behavior is ordered and safe.
+- Rebase order is topological from root descendants.
+- Use `git push --force-with-lease` after rebase.
+- Abort on first conflict and persist checkpoint.
+
+4. Missing PRs are handled in `sync`.
+- If PRs are missing, prompt user to create them.
+- Creation order must follow stack order.
+
+5. PR creation requires remote branch first.
+- Always push branch to `origin` before `gh pr create`.
+- This avoids GraphQL errors (`Head sha can't be blank`, `Head ref must be a branch`).
+
+## Command Semantics
+- `spr branch <name> [--from <branch>] [--worktree <path>]`
+  - Creates branch/worktree and records parent linkage in `spr-meta.json`.
+
+- `spr status [--from <branch>]`
+  - Prints detected stack plan and checkpoint summary.
+
+- `spr sync [--dry-run] [--from <branch>]`
+  - Detects stack, optionally creates missing PRs, rebases descendants in order, pushes updates.
+
+- `spr resume`
+  - Continues failed sync from `spr-state.json`.
+
+## Persistence Contract
+Stored under git common dir (`git rev-parse --git-common-dir`):
+- `spr-meta.json`: durable parent graph (`parentByBranch`).
+- `spr-state.json`: in-progress sync checkpoint only.
+
+If changing these schemas, include migration or backward-compat read logic.
+
+## Safety Rules
+- Never run mutating operations when any involved worktree is dirty.
+- Keep `--dry-run` side-effect free.
+- Stop on first rebase conflict; print direct recovery path.
+- Never replace `--force-with-lease` with `--force`.
+
+## Determinism Rules
+- Topological sort must be stable (explicit tie-break sorting).
+- Error messages should include branch + worktree path where applicable.
+- Avoid implicit behavior that depends on non-deterministic command output ordering.
+
+## Known Pitfalls (Already Hit)
+1. Running CLI outside a git repo
+- `git rev-parse --show-toplevel` fails. Ensure commands run within repo/worktree.
+
+2. Creating PRs for local-only branches
+- `gh pr create` fails unless branch is pushed first.
+
+3. Treating root/default branch as a PR candidate
+- Root branch may not need PR creation; only branches with recorded parents should be PR candidates in sync bootstrap.
+
+## Test Checklist for Changes
+1. `spr status` prints expected stack for a 3-branch worktree stack.
+2. `spr sync --dry-run` prints plan and performs no writes.
+3. `spr sync` with missing PRs:
+- prompts once
+- on `y`, pushes + creates PRs in order
+- then rebases/pushes descendants
+4. Inject a conflict and verify `spr-state.json` supports `spr resume`.
+5. Validate behavior with no checkpoint (`resume` should fail clearly).
+
+## Coding Rules
+- Keep modules small and single-purpose (`git`, `gh`, `plan`, `stack`, `state`, `meta`, `commands/*`).
+- Reuse shared plan discovery path; avoid duplicated graph logic in commands.
+- Prefer explicit typed errors for user-facing failures.
+- Update `PLAN.md` and `README.md` whenever command semantics or persistence change.
