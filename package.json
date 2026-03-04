@@ -7,9 +7,13 @@
     "spr": "./src/cli.ts"
   },
   "scripts": {
+    "build": "bun build src/cli.ts --compile --minify --bytecode --outfile dist/spr",
+    "install-cli": "bun run build && cp dist/spr /usr/local/bin/spr && echo 'Installed spr to /usr/local/bin/spr'",
     "dev": "bun run src/cli.ts",
     "sync": "bun run src/cli.ts sync",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:e2e": "bun test e2e",
+    "test:e2e:ci": "bun run typecheck && bun test e2e"
   },
   "devDependencies": {
     "@types/bun": "latest",

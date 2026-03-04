@@ -52,7 +52,7 @@ This file documents architectural decisions and operating rules for contributors
   - Installs the bundled `spr-usage` skill for Codex (`$CODEX_HOME/skills` or `~/.codex/skills`) and Claude (`~/.claude/skills`).
 
 - `spr sync [--dry-run] [--from <branch>]`
-  - Auto-seeds missing parent links from open PR base refs, detects closed-but-merged ancestor PRs (merge queue), rewrites parent links to bypass merged branches, then optionally creates missing PRs, rebases descendants in order, and pushes updates.
+  - Auto-seeds missing parent links from open PR base refs, detects closed-but-merged ancestor PRs (merge queue), rewrites parent links to bypass merged branches, updates open PR base refs to match the resolved stack, then optionally creates missing PRs, rebases descendants in order, and pushes updates.
 
 - `spr resume`
   - Continues failed sync from `spr-state.json`.

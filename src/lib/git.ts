@@ -1,4 +1,4 @@
-import { DirtyWorktreeError } from "./errors";
+import { DirtyWorktreeError, SprError } from "./errors";
 import { runCmd } from "./shell";
 import type { Worktree } from "../types";
 
@@ -75,8 +75,17 @@ export async function listDirtyWorktrees(worktreePaths: string[]): Promise<strin
   return dirty;
 }
 
-export async function stashWorkingTree(worktreePath: string, message: string): Promise<void> {
+export async function stashWorkingTree(worktreePath: string, message: string): Promise<string> {
   await runCmd(["git", "-C", worktreePath, "stash", "push", "-u", "-m", message]);
+  const topRef = await runCmd(["git", "-C", worktreePath, "stash", "list", "-n", "1", "--format=%gd"]);
+  if (!topRef) {
+    throw new SprError(`Failed to identify created stash in ${worktreePath}`);
+  }
+  return topRef;
+}
+
+export async function popStash(worktreePath: string, stashRef: string): Promise<void> {
+  await runCmd(["git", "-C", worktreePath, "stash", "pop", stashRef]);
 }
 
 export async function isAncestorCommit(cwd: string, ancestorCommit: string, ref: string): Promise<boolean> {
@@ -173,6 +182,14 @@ export async function addWorktreeForRemoteBranch(
 
 export async function fetch(worktreePath: string, remote = "origin"): Promise<void> {
   await runCmd(["git", "-C", worktreePath, "fetch", remote]);
+}
+
+export async function fastForwardBranchFromRemote(
+  worktreePath: string,
+  branch: string,
+  remote = "origin"
+): Promise<void> {
+  await runCmd(["git", "-C", worktreePath, "merge", "--ff-only", `${remote}/${branch}`]);
 }
 
 export async function rebaseOnto(worktreePath: string, ontoBranch: string): Promise<void> {

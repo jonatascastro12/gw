@@ -33,8 +33,16 @@ bun run src/cli.ts skill --codex-path ~/.codex/skills --claude-path ~/.claude/sk
 bun run src/cli.ts branch feature/a --from main --worktree ../wt-feature-a
 bun run src/cli.ts sync --dry-run
 bun run src/cli.ts sync
+bun run src/cli.ts restack
+bun run src/cli.ts restack --from feature/b
 bun run src/cli.ts resume
+bun run test:e2e
 ```
+
+## Testing
+
+- `bun run test:e2e`: runs end-to-end tests against temporary local git repos/worktrees using a fixture-driven fake `gh`.
+- `bun run test:e2e:ci`: runs `typecheck` then `test:e2e` (used by CI).
 
 ## Behavior
 
@@ -51,8 +59,13 @@ bun run src/cli.ts resume
 - Persist parent metadata in `spr-meta.json` (git common dir) when using `spr branch`
 - During `sync`, auto-infer missing parent links from open PR base refs and write them to `spr-meta.json` (real runs)
 - During `sync`, if an ancestor PR is `CLOSED` but detected as merged into its base branch (commit ancestry or `(#PR)` commit marker), auto-reparent descendants to that base and remove the merged branch from local stack metadata
+- During `sync`, update open PR base refs when they no longer match the current stack parent links (real runs; previewed in `--dry-run`)
 - If connected stack worktrees are dirty during `sync`/`resume`, prompt to stash changes before continuing
-- Prompt to create missing PRs during `sync`
+- After auto-stashing in `sync`/`resume`, prompt whether to automatically re-apply stashes after successful completion
+- Prompt to create missing PRs during `sync` and continue rebasing if you decline
+- `restack` rebases and pushes only descendant branches of current (or `--from`) branch
+- During `sync`, fast-forward the stack root branch from `origin/<root>` before rebasing descendants (skips with warning if `origin/<root>` does not exist)
+- If `--from` points to a merged/isolated branch, `sync` pivots planning to a local downstream open-PR branch when possible so base updates and rebases continue
 - Auto-update PR descriptions with a managed stack section on PR create and push
 - Update PR body via GitHub REST API (`gh api`) for compatibility with deprecated classic project fields
 - Rebase descendants in topological order

@@ -32,10 +32,12 @@ Primary outcome:
 ### Commands
 - `spr sync`
   - Auto-detect all local worktrees.
+  - Fast-forward the stack root branch from `origin/<root>` before rebasing descendants.
   - Auto-seed missing `spr-meta.json` parent links from open PR base refs before planning.
   - Detect ancestor branches whose PRs are closed-but-merged (including merge-queue close behavior) and collapse them out of the stack.
+  - Update open PR base refs to match the resolved stack parent graph.
   - Discover stack connected to current branch.
-  - Prompt to create missing PRs in stack order.
+  - Prompt to create missing PRs in stack order; continue sync if creation is declined.
   - Rebase descendants in topological order.
   - Push each updated branch with `--force-with-lease`.
 
@@ -45,6 +47,10 @@ Primary outcome:
 
 - `spr sync --from <branch>`
   - Optional branch override when not invoked from stack worktree.
+
+- `spr restack [--dry-run] [--from <branch>]`
+  - Rebase and push only descendants of current branch (or `--from`) in stack order.
+  - Skip PR creation/base-update logic; this is a pure stack rebase operation.
 
 - `spr resume`
   - Continue from last failed step using saved state.
@@ -85,8 +91,9 @@ Primary outcome:
 5. Compute root and topological order.
 
 ## Execution Semantics
-- Root branch is not rebased by `spr sync`.
-- If stack branches are missing PRs, `spr sync` prompts to create them.
+- Root branch is not rebased by `spr sync`, but it is fast-forwarded from `origin/<root>` before descendant rebases.
+- If `--from` is a merged/isolated branch, `spr sync` may pivot planning to a local downstream open-PR branch so stack updates still apply.
+- If stack branches are missing PRs, `spr sync` prompts to create them and still proceeds when declined.
 - Missing-PR creation flow:
   1. `git -C <wt> push -u origin <branch>`
   2. `gh pr create --head <branch> --base <parentOrDefaultBase> --fill`
@@ -99,6 +106,7 @@ Primary outcome:
 
 ## Safety and Failure Handling
 - If any involved worktree in the connected stack component is dirty, prompt to stash changes before mutating operations; abort if declined.
+- After auto-stash, prompt whether to re-apply stashes after a successful `sync`/`resume` run.
 - Stop at first conflict.
 - Persist checkpoint after each successful branch.
 - For closed PRs, only treat them as merged when merge evidence exists on base branch (head commit ancestry or a `(#PR_NUMBER)` commit marker).
@@ -210,7 +218,6 @@ type SprMeta = {
 - Optional CI/merge-queue integration.
 
 ## Open Questions
-- Should `sync` optionally refresh root from remote before rebasing descendants?
 - Should we support partial sync (`--to` / `--only`) for large stacks?
 - Should checkpoints retain history (multiple runs) instead of single state file?
 - Should `spr branch` auto-push the branch immediately when created?

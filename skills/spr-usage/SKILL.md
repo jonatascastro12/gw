@@ -24,8 +24,8 @@ Use this workflow to operate `spr` safely and predictably.
 
 1. Run `spr sync --dry-run --from <branch>` first.
 2. Confirm stack order and missing-PR prompts are correct.
-3. Run `spr sync --from <branch>`.
-4. If sync stops on conflict, resolve in the reported worktree and run `spr resume`.
+3. Run `spr sync --from <branch> --yes` (use `--yes`/`-y` to auto-confirm all prompts and avoid hanging in non-interactive environments like agents).
+4. If sync stops on conflict, resolve in the reported worktree and run `spr resume --yes`.
 
 ## Metadata Rules
 

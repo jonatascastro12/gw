@@ -13,13 +13,22 @@ export type SyncOptions = {
   dryRun?: boolean;
   resume?: boolean;
   fromBranch?: string;
+  yes?: boolean;
+};
+
+type AutoStash = {
+  entries: Array<{
+    worktreePath: string;
+    stashRef: string;
+  }>;
+  restoreAfterSuccess: boolean;
 };
 
 export async function runSync(opts: SyncOptions): Promise<void> {
   if (opts.resume) {
     const repoRoot = await git.repoRoot();
     const commonDir = await git.gitCommonDir(repoRoot);
-    await runResume(repoRoot, commonDir);
+    await runResume(repoRoot, commonDir, opts.yes);
     return;
   }
 
@@ -45,9 +54,21 @@ export async function runSync(opts: SyncOptions): Promise<void> {
   );
   const effectiveParentByBranch = sortRecord(mergedResolution.parentByBranch);
   const metadataChanged = !recordsEqual(meta.parentByBranch, effectiveParentByBranch);
+  const localBranches = new Set((await git.listWorktrees(repoRoot)).map((wt) => wt.branch));
+  const planningFromBranch = await pickPlanningFromBranch(
+    fromBranch,
+    mergedResolution,
+    effectiveParentByBranch,
+    localBranches
+  );
+  if (planningFromBranch !== fromBranch) {
+    ui.printStep(
+      `Using ${planningFromBranch} for planning because ${fromBranch} is already merged.`
+    );
+  }
 
   const { graph, plan, parentByBranch } = await discoverPlan({
-    fromBranch,
+    fromBranch: planningFromBranch,
     parentByBranchReplace: effectiveParentByBranch,
   });
   ui.printPlan(plan);
@@ -77,6 +98,18 @@ export async function runSync(opts: SyncOptions): Promise<void> {
   }
 
   const stackBranchesForPrs = plan.allBranches.filter((branch) => parentByBranch[branch]);
+  const baseUpdates = await findPrBaseUpdates(stackBranchesForPrs, parentByBranch);
+  if (baseUpdates.length > 0) {
+    const prefix = opts.dryRun ? "Dry-run: " : "";
+    ui.printStep(
+      `${prefix}updating ${baseUpdates.length} PR base branch(es) to match current stack parents.`
+    );
+    for (const update of baseUpdates) {
+      ui.printStep(
+        `- ${update.branch} PR #${update.prNumber}: ${update.currentBase} -> ${update.expectedBase}`
+      );
+    }
+  }
   const missingPrs = await findMissingPrs(stackBranchesForPrs);
   let shouldCreateMissingPrs = false;
   if (missingPrs.length > 0) {
@@ -86,9 +119,9 @@ export async function runSync(opts: SyncOptions): Promise<void> {
       return;
     }
 
-    shouldCreateMissingPrs = await askYesNo("Create missing PRs now? [y/N] ");
+    shouldCreateMissingPrs = await askYesNo("Create missing PRs now? [y/N] ", opts.yes);
     if (!shouldCreateMissingPrs) {
-      throw new SprError("Sync stopped: missing PRs. Re-run sync and create PRs when prompted.");
+      ui.printWarning("Continuing sync without creating missing PRs.");
     }
   }
 
@@ -96,7 +129,12 @@ export async function runSync(opts: SyncOptions): Promise<void> {
     return;
   }
 
-  await ensureCleanOrStash(worktreePathsForBranches(graph, plan.allBranches), "sync");
+  const autoStash = await ensureCleanOrStash(
+    worktreePathsForBranches(graph, plan.allBranches),
+    "sync",
+    opts.yes
+  );
+  await fastForwardRootFromOrigin(graph, plan.root);
 
   if (metadataChanged) {
     await metaStore.saveMeta(commonDir, {
@@ -109,6 +147,10 @@ export async function runSync(opts: SyncOptions): Promise<void> {
     for (const [child, parent] of Object.entries(inferredParentByBranch)) {
       ui.printStep(`- linked ${child} -> ${parent}`);
     }
+  }
+
+  if (baseUpdates.length > 0) {
+    await applyPrBaseUpdates(baseUpdates);
   }
 
   if (shouldCreateMissingPrs) {
@@ -152,6 +194,7 @@ export async function runSync(opts: SyncOptions): Promise<void> {
   }
 
   await stateStore.clearState(commonDir);
+  await restoreAutoStashAfterSuccess(autoStash, "sync");
   ui.printStep("Sync complete.");
 }
 
@@ -196,6 +239,53 @@ async function findMissingPrs(branches: string[]): Promise<string[]> {
   return missing;
 }
 
+type PrBaseUpdate = {
+  branch: string;
+  prNumber: number;
+  currentBase: string;
+  expectedBase: string;
+  url: string;
+};
+
+async function findPrBaseUpdates(
+  branches: string[],
+  parentByBranch: Record<string, string>
+): Promise<PrBaseUpdate[]> {
+  const updates: PrBaseUpdate[] = [];
+  for (const branch of branches) {
+    const expectedBase = parentByBranch[branch];
+    if (!expectedBase) {
+      continue;
+    }
+
+    const pr = await gh.viewOpenPrByHeadBranch(branch);
+    if (!pr) {
+      continue;
+    }
+    if (pr.baseRefName === expectedBase) {
+      continue;
+    }
+
+    updates.push({
+      branch,
+      prNumber: pr.number,
+      currentBase: pr.baseRefName,
+      expectedBase,
+      url: pr.url,
+    });
+  }
+  return updates;
+}
+
+async function applyPrBaseUpdates(updates: PrBaseUpdate[]): Promise<void> {
+  for (const update of updates) {
+    await gh.updatePrBase({ number: update.prNumber, url: update.url }, update.expectedBase);
+    ui.printSuccess(
+      `Updated PR #${update.prNumber} base for ${ui.styleBranch(update.branch)} to ${ui.styleBranch(update.expectedBase)}`
+    );
+  }
+}
+
 type MergedParentResolution = {
   parentByBranch: Record<string, string>;
   mergedBranches: Array<{
@@ -225,10 +315,10 @@ async function resolveMergedParentsInStack(
   const detectionByBranch = new Map<string, MergedBranchDetection>();
 
   while (true) {
-    const ancestors = listAncestorBranches(nextParents, fromBranch);
+    const candidates = listMergedBranchCandidates(nextParents, fromBranch);
     let changed = false;
 
-    for (const branch of ancestors) {
+    for (const branch of candidates) {
       const grandParent = nextParents[branch];
       if (!grandParent) {
         continue;
@@ -279,22 +369,25 @@ async function resolveMergedParentsInStack(
   };
 }
 
-function listAncestorBranches(parentByBranch: Record<string, string>, startBranch: string): string[] {
-  const ancestors: string[] = [];
-  const seen = new Set<string>([startBranch]);
+function listMergedBranchCandidates(
+  parentByBranch: Record<string, string>,
+  startBranch: string
+): string[] {
+  const candidates: string[] = [];
+  const seen = new Set<string>();
   let cursor = startBranch;
 
-  while (cursor.length > 0) {
+  while (cursor.length > 0 && !seen.has(cursor)) {
+    seen.add(cursor);
     const parent = parentByBranch[cursor];
-    if (!parent || seen.has(parent)) {
+    if (!parent) {
       break;
     }
-    ancestors.push(parent);
-    seen.add(parent);
+    candidates.push(cursor);
     cursor = parent;
   }
 
-  return ancestors;
+  return candidates;
 }
 
 async function detectMergedBranch(repoRoot: string, branch: string): Promise<MergedBranchDetection> {
@@ -357,7 +450,11 @@ async function createMissingPrs(
   }
 }
 
-async function askYesNo(question: string): Promise<boolean> {
+async function askYesNo(question: string, autoYes = false): Promise<boolean> {
+  if (autoYes) {
+    ui.printInfo(`${question}y (auto-confirmed)`);
+    return true;
+  }
   const rl = createInterface({ input, output });
   try {
     const answer = (await rl.question(question)).trim().toLowerCase();
@@ -367,10 +464,14 @@ async function askYesNo(question: string): Promise<boolean> {
   }
 }
 
-async function ensureCleanOrStash(worktreePaths: string[], action: "sync" | "resume"): Promise<void> {
+async function ensureCleanOrStash(
+  worktreePaths: string[],
+  action: "sync" | "resume",
+  autoYes = false
+): Promise<AutoStash | undefined> {
   const dirtyPaths = await git.listDirtyWorktrees(worktreePaths);
   if (dirtyPaths.length === 0) {
-    return;
+    return undefined;
   }
 
   ui.printWarning("Found uncommitted changes in:");
@@ -379,7 +480,8 @@ async function ensureCleanOrStash(worktreePaths: string[], action: "sync" | "res
   }
 
   const shouldStash = await askYesNo(
-    `Stash changes in these worktrees and continue ${action}? [y/N] `
+    `Stash changes in these worktrees and continue ${action}? [y/N] `,
+    autoYes
   );
   if (!shouldStash) {
     throw new SprError(
@@ -388,13 +490,21 @@ async function ensureCleanOrStash(worktreePaths: string[], action: "sync" | "res
   }
 
   const message = `spr auto-stash (${new Date().toISOString()})`;
+  const entries: AutoStash["entries"] = [];
   for (const path of dirtyPaths) {
-    await git.stashWorkingTree(path, message);
-    ui.printStep(`Stashed changes in ${path}`);
+    const stashRef = await git.stashWorkingTree(path, message);
+    entries.push({ worktreePath: path, stashRef });
+    ui.printStep(`Stashed changes in ${path} (${stashRef})`);
   }
+
+  const restoreAfterSuccess = await askYesNo(
+    `Re-apply stashed changes automatically after successful ${action}? [y/N] `,
+    autoYes
+  );
+  return { entries, restoreAfterSuccess };
 }
 
-async function runResume(repoRoot: string, commonDir: string): Promise<void> {
+async function runResume(repoRoot: string, commonDir: string, autoYes = false): Promise<void> {
   const existing = await stateStore.loadState(commonDir);
   if (!existing) {
     throw new SprError("No saved sync state found.");
@@ -410,7 +520,14 @@ async function runResume(repoRoot: string, commonDir: string): Promise<void> {
   const stackBranchesForPrs = existing.stackBranches.filter(
     (branch) => !!discovery.parentByBranch[branch]
   );
-  await ensureCleanOrStash(worktreePathsForBranches(graph, existing.stackBranches), "resume");
+  const autoStash = await ensureCleanOrStash(
+    worktreePathsForBranches(graph, existing.stackBranches),
+    "resume",
+    autoYes
+  );
+  if (existing.completed.length === 0) {
+    await fastForwardRootFromOrigin(graph, existing.rootBranch);
+  }
 
   const done = new Set(existing.completed);
   let state = { ...existing };
@@ -448,6 +565,7 @@ async function runResume(repoRoot: string, commonDir: string): Promise<void> {
   }
 
   await stateStore.clearState(commonDir);
+  await restoreAutoStashAfterSuccess(autoStash, "resume");
   ui.printStep("Resume complete.");
 }
 
@@ -464,6 +582,43 @@ function worktreePathsForBranches(
     paths.push(node.worktreePath);
   }
   return [...new Set(paths)].sort();
+}
+
+async function fastForwardRootFromOrigin(
+  graph: Map<string, { worktreePath: string }>,
+  rootBranch: string
+): Promise<void> {
+  const rootNode = graph.get(rootBranch);
+  if (!rootNode) {
+    throw new SprError(`Cannot update root branch: missing local worktree for ${rootBranch}`);
+  }
+
+  ui.printStep(`Fast-forwarding root ${rootBranch} from origin/${rootBranch} (${rootNode.worktreePath})`);
+  try {
+    await git.fetch(rootNode.worktreePath, "origin");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new SprError(
+      `Failed to fast-forward root branch ${rootBranch} in ${rootNode.worktreePath}. Resolve the root branch state and retry sync.\n${message}`
+    );
+  }
+
+  const hasRemoteRoot = await git.remoteBranchExists(rootNode.worktreePath, "origin", rootBranch);
+  if (!hasRemoteRoot) {
+    ui.printStep(
+      `Warning: skipping root fast-forward because origin/${rootBranch} does not exist (${rootNode.worktreePath}).`
+    );
+    return;
+  }
+
+  try {
+    await git.fastForwardBranchFromRemote(rootNode.worktreePath, rootBranch, "origin");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new SprError(
+      `Failed to fast-forward root branch ${rootBranch} in ${rootNode.worktreePath}. Resolve the root branch state and retry sync.\n${message}`
+    );
+  }
 }
 
 function sortRecord(input: Record<string, string>): Record<string, string> {
@@ -503,4 +658,64 @@ async function updateBranchStackDescriptionSafe(
     const message = error instanceof Error ? error.message : String(error);
     ui.printStep(`Warning: failed to refresh PR description for ${branch}: ${message}`);
   }
+}
+
+async function restoreAutoStashAfterSuccess(
+  autoStash: AutoStash | undefined,
+  action: "sync" | "resume"
+): Promise<void> {
+  if (!autoStash || !autoStash.restoreAfterSuccess || autoStash.entries.length === 0) {
+    return;
+  }
+
+  ui.printStep(`Restoring stashed changes after successful ${action}...`);
+  for (const entry of autoStash.entries) {
+    try {
+      await git.popStash(entry.worktreePath, entry.stashRef);
+      ui.printStep(`Restored ${entry.stashRef} in ${entry.worktreePath}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      ui.printStep(
+        `Warning: failed to restore ${entry.stashRef} in ${entry.worktreePath}: ${message}`
+      );
+    }
+  }
+}
+
+async function pickPlanningFromBranch(
+  requestedFromBranch: string,
+  mergedResolution: MergedParentResolution,
+  parentByBranch: Record<string, string>,
+  localBranches: Set<string>
+): Promise<string> {
+  const removed = new Set(mergedResolution.mergedBranches.map((branch) => branch.branch));
+  if (!removed.has(requestedFromBranch)) {
+    const hasParent = Boolean(parentByBranch[requestedFromBranch]);
+    const hasChildren = Object.values(parentByBranch).some((parent) => parent === requestedFromBranch);
+    if (hasParent || hasChildren) {
+      return requestedFromBranch;
+    }
+
+    const openChildren = await gh.listOpenPrsByBase(requestedFromBranch);
+    for (const childPr of openChildren) {
+      if (localBranches.has(childPr.headRefName)) {
+        return childPr.headRefName;
+      }
+    }
+    return requestedFromBranch;
+  }
+
+  const candidates = mergedResolution.rewiredChildren
+    .filter((rewire) => rewire.previousParent === requestedFromBranch)
+    .map((rewire) => rewire.child)
+    .filter((branch, idx, all) => all.indexOf(branch) === idx)
+    .sort((a, b) => a.localeCompare(b));
+
+  for (const candidate of candidates) {
+    if (localBranches.has(candidate)) {
+      return candidate;
+    }
+  }
+
+  return requestedFromBranch;
 }

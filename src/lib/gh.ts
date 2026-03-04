@@ -152,6 +152,22 @@ export async function updatePrBody(pr: Pick<PrInfo, "number" | "url">, body: str
   ]);
 }
 
+export async function updatePrBase(
+  pr: Pick<PrInfo, "number" | "url">,
+  baseBranch: string
+): Promise<void> {
+  const { owner, repo } = parseGithubPrUrl(pr.url);
+  await runCmd([
+    "gh",
+    "api",
+    "--method",
+    "PATCH",
+    `repos/${owner}/${repo}/pulls/${pr.number}`,
+    "-f",
+    `base=${baseBranch}`,
+  ]);
+}
+
 function parseGithubPrUrl(url: string): { owner: string; repo: string } {
   let parsed: URL;
   try {
