@@ -1,73 +1,159 @@
 # spr
 
-`spr` is a Bun CLI for syncing stacked PR branches across Git worktrees.
+`spr` syncs stacked PR branches across Git worktrees. It auto-detects your local worktrees, finds the PR stack connected to your current branch, and rebases descendants in topological order.
 
-It auto-detects all local worktrees, finds the PR stack connected to your current branch, then rebases descendants in order.
+## Install
 
-## Design Plan
+### Quick install (recommended)
 
-See `PLAN.md` for the full product and implementation plan.
+```bash
+curl -fsSL https://raw.githubusercontent.com/jonatascastro12/spr/main/install.sh | bash
+```
+
+This downloads a standalone binary for your platform and installs it to `/usr/local/bin`.
+Override the install location with `SPR_INSTALL_DIR`:
+
+```bash
+SPR_INSTALL_DIR=~/.local/bin curl -fsSL https://raw.githubusercontent.com/jonatascastro12/spr/main/install.sh | bash
+```
+
+### Build from source
+
+Requires [Bun](https://bun.sh).
+
+```bash
+git clone https://github.com/jonatascastro12/spr.git
+cd spr
+bun install
+bun run build            # outputs dist/spr
+cp dist/spr /usr/local/bin/spr
+```
+
+Or in one step:
+
+```bash
+bun run install-cli
+```
 
 ## Requirements
 
-- `bun`
 - `git`
-- `gh` authenticated against GitHub
+- `gh` — [GitHub CLI](https://cli.github.com/), authenticated (`gh auth login`)
 
-## Usage
+## Quick Start
+
+### 1. Create your first stacked branch
+
+From your repo, create a branch off `main` with its parent link tracked:
+
+```bash
+spr branch feature/auth --from main
+```
+
+Create a child branch on top of it:
+
+```bash
+spr branch feature/auth-ui --from feature/auth
+```
+
+### 2. Check the stack
+
+```bash
+spr status
+```
+
+This prints a tree showing your stack, branch order, and rebase plan.
+
+### 3. Sync the stack
+
+Preview what will happen:
+
+```bash
+spr sync --dry-run
+```
+
+Run the sync (rebases descendants, pushes, creates missing PRs):
+
+```bash
+spr sync
+```
+
+Use `--yes` to skip all prompts (useful for scripts and AI agents):
+
+```bash
+spr sync --yes
+```
+
+### 4. Handle conflicts
+
+If a rebase hits a conflict, `spr` saves a checkpoint and stops. Fix the conflict in the reported worktree, then:
+
+```bash
+spr resume
+```
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `spr sync` | Rebase and push the full stack in order, create missing PRs |
+| `spr restack` | Rebase and push only descendant branches of current branch |
+| `spr resume` | Continue a previously failed sync from checkpoint |
+| `spr status` | Show the detected stack tree and checkpoint state |
+| `spr branch <name>` | Create a branch + worktree and record the parent link |
+| `spr jump` | Interactively pick a stack branch and jump to its worktree |
+| `spr bootstrap` | Seed local worktrees and metadata from an existing PR chain |
+| `spr link` | Manually create or update a parent-child link in metadata |
+| `spr skill` | Install the `spr-usage` skill for Codex and Claude |
+
+## Common Options
+
+| Option | Applies to | Description |
+|--------|-----------|-------------|
+| `--dry-run` | sync, restack, bootstrap | Preview plan without making changes |
+| `--from <branch>` | sync, restack, status, jump, bootstrap | Override start branch for stack detection |
+| `-y, --yes` | sync, resume, restack | Auto-confirm all prompts |
+| `--print` | jump | Print selected worktree path only |
+| `--cd` | jump | Print a `cd` command for `eval` |
+
+## Examples
+
+```bash
+# Jump to a stack branch worktree
+eval "$(spr jump --cd)"
+
+# Bootstrap an existing PR stack into local worktrees
+spr bootstrap --from feature/top
+
+# Link a branch to a parent manually
+spr link feature/b --parent feature/a
+
+# Restack only children of current branch
+spr restack
+
+# Non-interactive sync (CI / agents)
+spr sync --yes --from feature/a
+```
+
+## How It Works
+
+- **Metadata**: Stack parent links are stored in `spr-meta.json` under the git common dir. This is the source of truth.
+- **Sync flow**: Fetch origin, fast-forward root, detect merged parents, update PR bases, create missing PRs, rebase descendants in order, push with `--force-with-lease`.
+- **Merged parent detection**: If a parent PR is closed but merged (by commit ancestry or merge-queue `(#PR)` markers), `spr` auto-reparents children and removes the merged branch from the stack.
+- **Dirty worktree safety**: If any worktree in the stack has uncommitted changes, `spr` prompts to stash before proceeding and offers to restore after completion.
+- **Checkpoints**: On conflict, state is saved to `spr-state.json` so `spr resume` picks up where it left off.
+- **PR descriptions**: Stack navigation tables are auto-injected into PR bodies on create and push.
+
+## Development
 
 ```bash
 bun install
-bun run src/cli.ts status
-bun run src/cli.ts jump
-bun run src/cli.ts jump feature/a
-bun run src/cli.ts jump --from feature/top --print
-bun run src/cli.ts jump --from feature/top --cd
-eval "$(bun run src/cli.ts jump --cd)"
-bun run src/cli.ts bootstrap --from feature/top
-bun run src/cli.ts link feature/top --parent feature/mid
-bun run src/cli.ts link --parent feature/mid
-bun run src/cli.ts link feature/mid --child feature/top
-bun run src/cli.ts skill
-bun run src/cli.ts skill --codex-path ~/.codex/skills --claude-path ~/.claude/skills
-bun run src/cli.ts branch feature/a --from main --worktree ../wt-feature-a
-bun run src/cli.ts sync --dry-run
-bun run src/cli.ts sync
-bun run src/cli.ts restack
-bun run src/cli.ts restack --from feature/b
-bun run src/cli.ts resume
-bun run test:e2e
+bun run typecheck        # type-check without emitting
+bun run dev              # run CLI directly via bun
+bun run test:e2e         # run end-to-end tests
+bun run build            # compile standalone binary
 ```
 
-## Testing
+## License
 
-- `bun run test:e2e`: runs end-to-end tests against temporary local git repos/worktrees using a fixture-driven fake `gh`.
-- `bun run test:e2e:ci`: runs `typecheck` then `test:e2e` (used by CI).
-
-## Behavior
-
-- Detect worktrees: `git worktree list --porcelain`
-- Read PR metadata: `gh pr view <branch> --json number,headRefName,baseRefName,url,title,body`
-- Bootstrap existing open stacks: discover ancestor/descendant PR chain, create missing worktrees, and write `spr-meta.json`
-- Manually link stack metadata in either direction with `spr link` (defaults to current branch when omitted)
-- Install bundled `spr-usage` skill for both Codex and Claude via `spr skill`
-- Build stack graph by local parent/child branch references
-- `status` prints a stack tree view with branch tags (`root`, `current`, `rebase:n`)
-- `jump` supports interactive arrow-key selection (up/down + enter) and prints the selected worktree path
-- `jump --cd` prints a shell-safe `cd -- <path>` command so you can run `eval "$(spr jump --cd)"` in your current shell
-- Terminal output is colorized when running in an interactive TTY (respects `NO_COLOR`)
-- Persist parent metadata in `spr-meta.json` (git common dir) when using `spr branch`
-- During `sync`, auto-infer missing parent links from open PR base refs and write them to `spr-meta.json` (real runs)
-- During `sync`, if an ancestor PR is `CLOSED` but detected as merged into its base branch (commit ancestry or `(#PR)` commit marker), auto-reparent descendants to that base and remove the merged branch from local stack metadata
-- During `sync`, update open PR base refs when they no longer match the current stack parent links (real runs; previewed in `--dry-run`)
-- If connected stack worktrees are dirty during `sync`/`resume`, prompt to stash changes before continuing
-- After auto-stashing in `sync`/`resume`, prompt whether to automatically re-apply stashes after successful completion
-- Prompt to create missing PRs during `sync` and continue rebasing if you decline
-- `restack` rebases and pushes only descendant branches of current (or `--from`) branch
-- During `sync`, fast-forward the stack root branch from `origin/<root>` before rebasing descendants (skips with warning if `origin/<root>` does not exist)
-- If `--from` points to a merged/isolated branch, `sync` pivots planning to a local downstream open-PR branch when possible so base updates and rebases continue
-- Auto-update PR descriptions with a managed stack section on PR create and push
-- Update PR body via GitHub REST API (`gh api`) for compatibility with deprecated classic project fields
-- Rebase descendants in topological order
-- Push each updated branch with `--force-with-lease`
-- Save checkpoint in `.git/spr-state.json` (actually in `git-common-dir`)
+MIT
