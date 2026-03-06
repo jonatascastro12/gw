@@ -25,13 +25,23 @@ Use this workflow to operate `gw` safely and predictably.
 1. Run `gw sync --dry-run --from <branch>` first.
 2. Confirm stack order and missing-PR prompts are correct.
 3. Run `gw sync --from <branch> --yes` (use `--yes`/`-y` to auto-confirm all prompts and avoid hanging in non-interactive environments like agents).
-4. If sync stops on conflict, resolve in the reported worktree and run `gw resume --yes`.
+4. If sync stops on conflict, you have several options:
+   - **AI resolve**: Run `gw resolve` to auto-resolve conflicts using Claude or Codex CLI.
+   - **Manual resolve**: Fix conflicts in the reported worktree, `git add`, `git rebase --continue`, then `gw resume --yes`.
+   - **Abort**: Run `gw abort` to abort the rebase and clear state.
+   - **Abort + rollback**: Run `gw abort --rollback --yes` to also reset all branches to pre-sync SHAs.
 
 ## Metadata Rules
 
 1. Treat `gw-meta.json` as source of truth for parent linkage.
 2. Use `gw link` or `gw branch` to update linkage instead of manual edits.
 3. Expect `gw sync` to auto-seed missing parent links from open PR base refs when possible.
+
+## Restack Descendants Only
+
+1. Run `gw restack --dry-run --from <branch>` to preview.
+2. Run `gw restack --from <branch> --yes` to rebase only descendants of the given branch.
+3. On conflict, the same resolve/abort/resume flow applies.
 
 ## Troubleshooting
 
@@ -41,3 +51,7 @@ Use this workflow to operate `gw` safely and predictably.
 - Create/check out a worktree for that branch first, or run `gw bootstrap`.
 3. Missing PR inference:
 - Ensure the branch has an open PR, otherwise add linkage with `gw link`.
+4. "Rebase is still in progress" on resume:
+- Finish resolving conflicts (`git rebase --continue`) or run `gw abort`.
+5. Want to undo a sync completely:
+- Run `gw abort --rollback --yes` to reset all branches to their pre-sync state.

@@ -53,22 +53,39 @@ This file documents architectural decisions and operating rules for contributors
 
 - `gw sync [--dry-run] [--from <branch>]`
   - Auto-seeds missing parent links from open PR base refs, detects closed-but-merged ancestor PRs (merge queue), rewrites parent links to bypass merged branches, updates open PR base refs to match the resolved stack, then optionally creates missing PRs, rebases descendants in order, and pushes updates.
+  - Creates backup refs (`refs/gw-backup/<branch>/<timestamp>`) before rebasing for safe rollback.
+
+- `gw submit [--dry-run] [--from <branch>]`
+  - Push current branch and descendants, create/update PRs without rebasing.
 
 - `gw resume`
-  - Continues failed sync from `gw-state.json`.
+  - Continues failed sync or restack from `gw-state.json`.
+  - Detects if a rebase is still in progress and guides the user to finish or abort.
+  - If the failed branch's rebase was already completed manually, skips the rebase and just pushes.
+
+- `gw abort [--rollback] [--yes]`
+  - Aborts any active rebase on the failed branch and clears `gw-state.json`.
+  - With `--rollback`: resets all completed + failed branches to pre-sync SHAs using backup refs, then pushes with `--force-with-lease`. Warns if worktrees are dirty.
+
+- `gw resolve [--tool <claude|codex>]`
+  - Uses an AI CLI tool (Claude or Codex) to resolve rebase conflicts in the failed worktree.
+  - Auto-detects available tool (prefers `claude`, falls back to `codex`). Override with `--tool`.
+  - After resolution, runs `git rebase --continue` and tells user to run `gw resume`.
 
 ## Persistence Contract
 Stored under git common dir (`git rev-parse --git-common-dir`):
 - `gw-meta.json`: durable parent graph (`parentByBranch`).
-- `gw-state.json`: in-progress sync checkpoint only.
+- `gw-state.json`: in-progress sync/restack checkpoint. Includes `command` ("sync" | "restack"), `failedWorktreePath`, and `snapshotTimestamp`.
+- `refs/gw-backup/<branch>/<timestamp>`: lightweight git refs storing pre-sync SHAs for rollback. Created before each sync/restack, cleaned up by `gw abort --rollback` or on successful completion.
 
 If changing these schemas, include migration or backward-compat read logic.
 
 ## Safety Rules
 - Never run mutating operations when any involved worktree is dirty; prompt user to stash first and abort if declined.
 - Keep `--dry-run` side-effect free.
-- Stop on first rebase conflict; print direct recovery path.
+- Stop on first rebase conflict; print structured recovery guide (manual resolve, `gw resolve`, `gw abort`).
 - Never replace `--force-with-lease` with `--force`.
+- Create backup refs before any rebase loop for safe rollback via `gw abort --rollback`.
 
 ## Determinism Rules
 - Topological sort must be stable (explicit tie-break sorting).
@@ -94,6 +111,10 @@ If changing these schemas, include migration or backward-compat read logic.
 - then rebases/pushes descendants
 4. Inject a conflict and verify `gw-state.json` supports `gw resume`.
 5. Validate behavior with no checkpoint (`resume` should fail clearly).
+5b. Validate `gw abort` clears state and aborts active rebase.
+5c. Validate `gw abort --rollback` resets branches to pre-sync SHAs.
+5d. Validate `gw resume` during an active rebase tells user to finish resolving.
+5e. Validate `gw restack` saves checkpoint state on conflict (enables abort/resume).
 6. Validate dirty-worktree flow:
 - `gw sync`/`gw resume` prompts to stash when uncommitted changes are present
 - on `y`, stash is created and command proceeds
