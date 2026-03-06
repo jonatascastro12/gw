@@ -86,10 +86,43 @@ gw sync --yes
 
 ### 4. Handle conflicts
 
-If a rebase hits a conflict, `gw` saves a checkpoint and stops. Fix the conflict in the reported worktree, then:
+If a rebase hits a conflict, `gw` saves a checkpoint and prints a guide:
+
+```
+Rebase conflict on feature/auth-ui
+
+  To resolve manually:
+    1. cd /path/to/wt-auth-ui
+    2. Fix conflicting files, then: git add <files>
+    3. git rebase --continue
+    4. gw resume
+
+  To resolve with AI:
+    gw resolve
+
+  To abort:
+    gw abort              (abort rebase, keep already-synced branches)
+    gw abort --rollback   (abort and reset ALL branches to pre-sync state)
+```
+
+Use AI to resolve conflicts automatically (requires `claude` or `codex` CLI):
+
+```bash
+gw resolve
+gw resolve --tool codex   # force a specific tool
+```
+
+Or resolve manually and continue:
 
 ```bash
 gw resume
+```
+
+To bail out cleanly:
+
+```bash
+gw abort                  # abort rebase, clear state
+gw abort --rollback       # also reset branches to pre-sync SHAs
 ```
 
 ## Commands
@@ -97,8 +130,11 @@ gw resume
 | Command | Description |
 |---------|-------------|
 | `gw sync` | Rebase and push the full stack in order, create missing PRs |
+| `gw submit` | Push current branch and descendants, create/update PRs (no rebase) |
 | `gw restack` | Rebase and push only descendant branches of current branch |
-| `gw resume` | Continue a previously failed sync from checkpoint |
+| `gw resume` | Continue a previously failed sync or restack from checkpoint |
+| `gw abort` | Abort a failed sync/restack and clean up state |
+| `gw resolve` | Use AI (Claude/Codex) to resolve rebase conflicts |
 | `gw status` | Show the detected stack tree and checkpoint state |
 | `gw branch <name>` | Create a branch + worktree and record the parent link |
 | `gw jump` | Interactively pick a stack branch and jump to its worktree |
@@ -112,7 +148,9 @@ gw resume
 |--------|-----------|-------------|
 | `--dry-run` | sync, restack, bootstrap | Preview plan without making changes |
 | `--from <branch>` | sync, restack, status, jump, bootstrap | Override start branch for stack detection |
-| `-y, --yes` | sync, resume, restack | Auto-confirm all prompts |
+| `-y, --yes` | sync, resume, restack, abort | Auto-confirm all prompts |
+| `--rollback` | abort | Reset all branches to pre-sync SHAs |
+| `--tool <claude\|codex>` | resolve | Specify which AI CLI to use |
 | `--print` | jump | Print selected worktree path only |
 | `--cd` | jump | Print a `cd` command for `eval` |
 
@@ -133,6 +171,12 @@ gw restack
 
 # Non-interactive sync (CI / agents)
 gw sync --yes --from feature/a
+
+# Abort a failed sync and reset all branches
+gw abort --rollback
+
+# Use AI to resolve a rebase conflict
+gw resolve --tool claude
 ```
 
 ## How It Works
@@ -141,7 +185,9 @@ gw sync --yes --from feature/a
 - **Sync flow**: Fetch origin, fast-forward root, detect merged parents, update PR bases, create missing PRs, rebase descendants in order, push with `--force-with-lease`.
 - **Merged parent detection**: If a parent PR is closed but merged (by commit ancestry or merge-queue `(#PR)` markers), `gw` auto-reparents children and removes the merged branch from the stack.
 - **Dirty worktree safety**: If any worktree in the stack has uncommitted changes, `gw` prompts to stash before proceeding and offers to restore after completion.
-- **Checkpoints**: On conflict, state is saved to `gw-state.json` so `gw resume` picks up where it left off.
+- **Checkpoints**: On conflict, state is saved to `gw-state.json` so `gw resume` picks up where it left off. Both `sync` and `restack` support checkpointing.
+- **Backup refs**: Before rebasing, `gw` saves branch SHAs as git refs (`refs/gw-backup/<branch>/<timestamp>`). Use `gw abort --rollback` to restore all branches to their pre-sync state.
+- **AI conflict resolution**: `gw resolve` auto-detects `claude` or `codex` CLI and invokes it to resolve rebase conflicts.
 - **PR descriptions**: Stack navigation tables are auto-injected into PR bodies on create and push.
 
 ## Development
