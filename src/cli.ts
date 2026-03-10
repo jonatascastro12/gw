@@ -39,6 +39,7 @@ type ParsedArgs =
       fromBranch?: string;
       worktreePath?: string;
       noWorktree?: boolean;
+      cursor?: boolean;
       help?: boolean;
     }
   | {
@@ -97,6 +98,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     let fromBranch: string | undefined;
     let worktreePath: string | undefined;
     let noWorktree = false;
+    let cursor = false;
 
     for (let i = 0; i < rest.length; i += 1) {
       const arg = rest[i];
@@ -114,15 +116,19 @@ function parseArgs(argv: string[]): ParsedArgs {
         noWorktree = true;
         continue;
       }
+      if (arg === "--cursor") {
+        cursor = true;
+        continue;
+      }
       if (arg === "-h" || arg === "--help") {
-        return { command: "branch", name, fromBranch, worktreePath, noWorktree, help: true };
+        return { command: "branch", name, fromBranch, worktreePath, noWorktree, cursor, help: true };
       }
       if (arg.startsWith("-")) {
         throw new GwError(`Unknown option: ${arg}`);
       }
     }
 
-    return { command: "branch", name, fromBranch, worktreePath, noWorktree };
+    return { command: "branch", name, fromBranch, worktreePath, noWorktree, cursor };
   }
 
   if (firstRaw === "bootstrap") {
@@ -366,7 +372,7 @@ Usage:
   gw bootstrap [--from <branch>] [--worktree-root <path>] [--dry-run]
   gw link [branch] (--parent <parent> | --child <child>)
   gw skill [--path <skills-dir>] [--codex-path <skills-dir>] [--claude-path <skills-dir>]
-  gw branch <name> [--from <branch>] [--worktree <path>] [--no-worktree]
+  gw branch <name> [--from <branch>] [--worktree <path>] [--no-worktree] [--cursor]
 
 Commands:
   init      Configure worktree root for the current repository
@@ -393,6 +399,7 @@ Options:
   --cd      For 'jump': print a shell-safe 'cd -- <path>' command for eval
   --worktree-root Directory where bootstrap creates missing worktrees
   --no-worktree For 'branch': skip automatic worktree creation even if configured
+  --cursor  For 'branch': open Cursor editor in the created worktree
   --parent  For 'link': treat [branch] (or current branch) as child and link it to this parent
   --child   For 'link': treat [branch] (or current branch) as parent and link this child to it
   --path    For 'skill': install into one skills root directory
@@ -449,6 +456,7 @@ async function main(): Promise<void> {
       fromBranch: args.fromBranch,
       worktreePath: args.worktreePath,
       noWorktree: args.noWorktree,
+      cursor: args.cursor,
     });
     return;
   }
